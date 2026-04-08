@@ -1,5 +1,11 @@
 # AI project ideas for documentation teams
 
+An open-source collection of AI project ideas for documentation teams that use docs-as-code workflows. Each idea targets a specific pain point, explains why AI is the right tool, and includes an implementation sketch with research backing and named tools. Built for technical writers, docs engineers, developers, and anyone working at the intersection of documentation and AI.
+
+Want to add your own idea? See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 This document collects project ideas for documentation teams exploring AI automation. Every idea is grounded in a real pain point: content that drifts out of sync with code, review queues clogged with mechanical edits, documentation gaps that surface through customer complaints instead of proactive detection. Each idea is framed around a central question: what can AI enable documentation teams to do that they couldn't do before?
 
 These ideas emerged from a documentation team managing a large doc set (500+ pages) for a fast-shipping engineering organization. The problems are not unique to that team. If your documentation lives in a Git repository, your review process uses pull requests, and your CI pipeline runs linters or validators, most of these ideas apply directly to your stack.
@@ -933,3 +939,9 @@ The [llms.txt specification](https://llmstxt.org/) was created by Jeremy Howard 
 #### Related ideas
 
 Part of the AI readability cluster with [AI parseability validation](#ai-parseability-validation), [Ghost reader report](#ghost-reader-report), and [MCP server for documentation](#mcp-server-for-documentation). llms.txt provides a passive index; the MCP server provides an active API. Both are needed; different AI systems use different consumption patterns.
+
+---
+
+## Contributing
+
+Have an idea that belongs here? Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the idea template, quality criteria, and submission process.
