@@ -50,10 +50,10 @@ The implementation sketches describe architectures and approaches, not step-by-s
 | [Alt text generation for screenshots](#alt-text-generation-for-screenshots) | Content generation     | Vision-model pipeline generating contextual alt text from screenshots and surrounding page context | [Authoring-time validation hooks](#authoring-time-structural-validation-hooks) |
 | [Documentation scaffolding CLI](#documentation-scaffolding-cli) | Content generation     | CLI tool generating new doc pages with correct frontmatter, headings, and components | [Authoring-time validation hooks](#authoring-time-structural-validation-hooks), [Engineer-to-docs input pipeline](#engineer-to-docs-structured-input-pipeline) |
 | [Engineer-to-docs structured input pipeline](#engineer-to-docs-structured-input-pipeline) | Content generation     | Converts structured engineer answers into on-format doc drafts via templates and AI prose | [Code-to-docs detection](#code-to-docs-change-detection-pipeline), [Documentation scaffolding CLI](#documentation-scaffolding-cli) |
-| [AI parseability validation](#ai-parseability-validation)    | AI readability         | Scores pages on AI parseability for RAG systems, agents, and coding assistants | [Ghost reader report](#ghost-reader-report), [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle) |
-| [Ghost reader report](#ghost-reader-report)                  | AI readability         | Audits AI-generated responses about your product for factual accuracy against current docs | [AI parseability validation](#ai-parseability-validation), [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle) |
-| [MCP server for documentation](#mcp-server-for-documentation) | AI readability         | Read-only MCP server exposing docs to Claude Code, Copilot, and Cursor at inference time | [AI parseability validation](#ai-parseability-validation), [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle) |
-| [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle) | AI readability         | Build-time llms.txt generation, JSON-LD schema markup, and frontmatter CI enforcement | [AI parseability validation](#ai-parseability-validation), [Ghost reader report](#ghost-reader-report), [MCP server for documentation](#mcp-server-for-documentation) |
+| [Agent-friendly documentation validation](#agent-friendly-documentation-validation) | AI readability         | Validates documentation sites against the Agent-Friendly Documentation Spec using afdocs CLI checks and LLM comprehension testing | [Ghost reader report](#ghost-reader-report), [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle) |
+| [Ghost reader report](#ghost-reader-report)                  | AI readability         | Audits AI-generated responses about your product for factual accuracy against current docs | [Agent-friendly documentation validation](#agent-friendly-documentation-validation), [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle) |
+| [MCP server for documentation](#mcp-server-for-documentation) | AI readability         | Read-only MCP server exposing docs to Claude Code, Copilot, and Cursor at inference time | [Agent-friendly documentation validation](#agent-friendly-documentation-validation), [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle) |
+| [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle) | AI readability         | Build-time llms.txt generation, JSON-LD schema markup, and frontmatter CI enforcement | [Agent-friendly documentation validation](#agent-friendly-documentation-validation), [Ghost reader report](#ghost-reader-report), [MCP server for documentation](#mcp-server-for-documentation) |
 
 ---
 
@@ -806,41 +806,53 @@ Complements [Code-to-docs change detection](#code-to-docs-change-detection-pipel
 
 ## AI readability and discoverability
 
-### AI parseability validation
-A validation tool that evaluates documentation pages against AI parseability criteria, scoring how well each page works when ingested by RAG systems, AI support agents, and coding assistants. It checks heading specificity, section self-containment, cross-reference clarity, and chunk boundary alignment, then produces per-page scores with actionable structural recommendations. The tool runs as a scheduled CI job, surfacing a prioritized list of pages most likely to produce poor AI-mediated answers.
+### Agent-friendly documentation validation
+A two-stage validation pipeline that evaluates documentation sites against the [Agent-Friendly Documentation Spec](https://agentdocsspec.com/), scoring how well each site and page serves coding agents, RAG pipelines, and AI support systems. Stage 1 runs the spec's 22 automated checks via the [`afdocs`](https://afdocs.dev/) CLI covering content discoverability, markdown availability, page size, content structure, URL stability, observability, and authentication. Stage 2 adds LLM-based comprehension testing: an AI reads individual sections in isolation and evaluates whether it can extract accurate, complete answers without surrounding context. The pipeline runs as a scheduled CI job, producing a scored report with category breakdowns and actionable fix suggestions.
 
 #### The problem it solves
 
-Documentation that is well-structured for human readers is not necessarily well-structured for AI retrieval. RAG systems and coding assistants need clear heading specificity, self-contained sections, unambiguous cross-references, and logical chunk boundaries. Documentation that relies on visual cues, implicit context from adjacent sections, or navigation structure to convey meaning fails when ingested by AI. A section that begins "As mentioned above, the policy file controls access..." is comprehensible to a human scrolling the page but broken when that section is retrieved in isolation by a RAG system. The [2025 Stack Overflow Developer Survey](https://survey.stackoverflow.co/2025/) found that 84% of developers now use or plan to use AI tools, yet 46% say they don't trust AI output accuracy.
+Documentation sites are increasingly consumed by coding agents (Claude Code, Cursor, GitHub Copilot) rather than human readers, but most sites were not built for this access pattern. Agents hit truncation limits, get walls of CSS instead of content, cannot follow cross-host redirects, and do not know about discovery mechanisms like `llms.txt`. Documentation that relies on client-side rendering, tabbed UI components, or navigation structure to convey meaning fails when agents fetch it. These problems are invisible to site owners: agents silently work with partial information, fall back on training data, or recommend competing products whose docs they can parse. The [Agent-Friendly Documentation Spec](https://agentdocsspec.com/) codifies [22 checks across 7 categories](https://agentdocsspec.com/spec/) that evaluate how well a documentation site serves agent consumers, grounded in empirical observation of real agent workflows.
+
+Beyond coding agents, documentation also feeds RAG pipelines and AI support systems. A section that begins "As mentioned above, the policy file controls access..." is comprehensible to a human scrolling the page but broken when retrieved in isolation by a RAG system. The [2025 Stack Overflow Developer Survey](https://survey.stackoverflow.co/2025/) found that 84% of developers now use or plan to use AI tools, yet 46% say they don't trust AI output accuracy.
 
 #### Why AI is needed
 
-Evaluating whether documentation is structured for AI parseability requires testing it against an AI system. No deterministic check can tell you "an LLM reading this section in isolation would miss that the prerequisites are listed two sections above." Only an AI can assess AI-readability. A deterministic checker can verify headings exist and links resolve, but it cannot evaluate whether heading content is specific enough for a RAG system to identify the section's scope without surrounding context.
+The spec's 22 checks cover structural and infrastructure problems that deterministic and heuristic tools can detect: missing `llms.txt`, client-side rendering, page size violations, broken redirects, tabbed content serialization blowup, cache header issues. The [`afdocs`](https://afdocs.dev/) CLI automates all of these. But evaluating whether documentation *content* is comprehensible to an AI system requires testing it against an AI system. No deterministic check can assess whether an LLM reading a section in isolation would miss that the prerequisites are listed two sections above, whether heading content is specific enough for a RAG system to identify scope without surrounding context, whether code examples are self-contained, or whether cross-references provide enough semantic information to be useful when followed in isolation. The AI evaluation layer tests what structural checks cannot: content-level comprehensibility for non-human consumers.
 
 #### How it might work
 
-Two stages. **Stage 1** (deterministic, fast): a script scans all doc files and flags structural issues it can detect mechanically: context-dependent headings ("The next steps," "As noted above"), sections shorter than a minimum token threshold, and cross-references using display text with no semantic relationship to the target ("See here," "Click this link"). Parse the source with a structure-preserving converter such as [Docling](https://github.com/docling-project/docling) before chunking so headings, tables, and code blocks survive into the evaluation input. **Stage 2** (AI): for prioritized pages, an LLM evaluates each section in isolation by answering a test question against just that section's text, then scoring whether the answer is coherent and complete. [RAGAS](https://docs.ragas.io/) provides the faithfulness and context-relevance metrics.
 
-For a focused sprint: run Stage 1 against all topics for a prioritized list; apply Stage 2 to the 20 highest-traffic pages. Output: per-page report with overall parseability score, flagged sections, and concrete recommendations.
+Two stages. **Stage 1** (deterministic, ships day 1): run [`afdocs`](https://afdocs.dev/) against your documentation site. This executes the spec's 22 checks across content discoverability (llms.txt existence, validity, size, link resolution, markdown links, page directives), markdown availability (URL support, content negotiation), page size and truncation risk (rendering strategy, markdown size, HTML size, content start position), content structure (tabbed content serialization, section header quality, code fence validity), URL stability (HTTP status codes, redirect behavior), observability (llms.txt freshness, markdown-HTML content parity, cache header hygiene), and authentication (auth gate detection, alternative access paths). The output is a scored report with category breakdowns, per-check pass/warn/fail results, and specific fix suggestions. Integrate into CI with the built-in vitest helper for regression detection.
+
+```bash
+npx afdocs check https://docs.example.com --format scorecard
+```
+
+**Stage 2** (AI, adds comprehension testing): for prioritized pages (highest-traffic, worst Stage 1 scores, or pages flagged by the spec's content structure checks), an LLM evaluates each section in isolation by answering a test question against just that section's text, then scoring whether the answer is coherent and complete. [RAGAS](https://docs.ragas.io/) provides faithfulness and context-relevance metrics for teams that also serve RAG pipelines. This layer catches content-level problems invisible to structural checks: implicit context dependencies, ambiguous headings, and sections that assume knowledge from elsewhere on the page.
+
+For a focused sprint: run Stage 1 against your full site for an immediate scorecard with actionable fixes. Apply Stage 2 to the 20 highest-traffic pages. Output: per-site scorecard (Stage 1) plus per-page comprehension report (Stage 2) with concrete recommendations. Most Stage 1 fixes are configuration changes, not content rewrites: adding an `llms.txt`, enabling server-side rendering, or serving `.md` URLs can move a site from an F to a B in a single sprint.
 
 #### The value it will bring
 
-A concrete queue of structural improvements with measurable impact on AI-mediated answer quality. Documentation that works better for AI consumers also works better for human readers; the fixes compound. The [Contextual AI document parser study](https://contextual.ai/blog/document-parser-for-rag) demonstrated that including document hierarchy metadata in chunks increased end-to-end RAG accuracy from 69.2% to 84.0%.
+Stage 1 delivers immediate, quantified visibility into agent accessibility with zero AI cost. The spec's interaction effects analysis surfaces systemic problems beyond individual check failures: undiscoverable markdown (site serves `.md` but agents cannot find it), truncated indexes (`llms.txt` exceeds agent context limits), client-rendered pages (agents see empty shells), and authenticated docs without alternatives (agents fall back on training data). Stage 2 provides a concrete queue of content-level improvements with measurable impact on AI-mediated answer quality. Documentation that works better for AI consumers also works better for human readers; the fixes compound. The [Contextual AI document parser study](https://contextual.ai/blog/document-parser-for-rag) demonstrated that including document hierarchy metadata in chunks increased end-to-end RAG accuracy from 69.2% to 84.0%.
 
 #### Research backing
 
-A [Vectara study at NAACL 2025](https://langcopilot.com/posts/2025-10-11-document-chunking-for-rag-practical-guide) found that chunking configuration had as much influence on retrieval quality as the choice of embedding model, confirming documentation structure is a primary lever for AI answer quality. The [Building Production RAG guide (PremAI, 2026)](https://blog.premai.io/building-production-rag-architecture-chunking-evaluation-monitoring-2026-guide/) identifies "source data layout and structure" as the first optimization target. [Mintlify's analysis on structuring docs for AI](https://www.mintlify.com/blog/structure-documentation-AI-human-readers) identifies the same structural patterns as essential for both audiences.
+The [Agent-Friendly Documentation Spec](https://agentdocsspec.com/) (v0.3.0, 2026) defines the 22 checks implemented by [`afdocs`](https://afdocs.dev/), grounded in findings from [Agent-Friendly Docs](https://dacharycarey.com/2026/02/18/agent-friendly-docs/) (observations from 10+ hours of validating 578 coding patterns with Claude, covering URL failure modes, `llms.txt` discovery, markdown benefits, and page truncation) and [Agent Web Fetch Spelunking](https://dacharycarey.com/2026/02/19/agent-web-fetch-spelunking/) (deep dive into how Claude Code's web fetch pipeline processes HTML and markdown, including the summarization model, truncation limits, and why inline CSS can make a 97-line HTML page invisible to agents). The spec's [Appendix A](https://agentdocsspec.com/spec/#appendix-a-known-platform-truncation-limits) documents known truncation limits across Claude Code, Cursor, GitHub Copilot, Gemini, and OpenAI. A [Vectara study at NAACL 2025](https://langcopilot.com/posts/2025-10-11-document-chunking-for-rag-practical-guide) found that chunking configuration had as much influence on retrieval quality as the choice of embedding model. [Mintlify's analysis on structuring docs for AI](https://www.mintlify.com/blog/structure-documentation-AI-human-readers) identifies the same structural patterns as essential for both human and AI audiences.
 
 #### Recommended tools
 
-- [RAGAS](https://docs.ragas.io/) (Python, Apache 2.0): RAG evaluation framework with faithfulness, answer relevancy, context precision, and context recall metrics.
 - [Docling](https://github.com/docling-project/docling) (Python, MIT): structure-preserving document parser that keeps headings, tables, and layout metadata intact before chunking or evaluation.
 - [Promptfoo](https://github.com/promptfoo/promptfoo) (TypeScript, MIT): useful for keeping a stable section-isolation eval suite in CI and comparing how different models score the same page slices.
 - [LLMTEXT](https://parallel.ai/blog/LLMTEXT-for-llmstxt) (open source): check tool for validating site-level AI-readability standards.
+- [`afdocs`](https://afdocs.dev/) ([npm](https://www.npmjs.com/package/afdocs), [GitHub](https://github.com/agent-ecosystem/afdocs)): reference implementation of the Agent-Friendly Documentation Spec. CLI tool and Node.js library running all 22 checks with scorecard output and CI integration via vitest helper.
+- [Agent-Friendly Documentation Spec](https://agentdocsspec.com/) ([GitHub](https://github.com/agent-ecosystem/agent-docs-spec)): the open spec defining the 22 checks, pass/warn/fail criteria, interaction effects, and known platform truncation limits.
+- [RAGAS](https://docs.ragas.io/) (Python, Apache 2.0): RAG evaluation framework with faithfulness, answer relevancy, context precision, and context recall metrics. Powers Stage 2 comprehension testing for teams that also serve RAG pipelines.
+- [remark-lint-frontmatter-schema](https://github.com/JulianCataldo/remark-lint-frontmatter-schema): validates frontmatter against a JSON schema for metadata completeness. Complements the spec's content structure checks.
 
 #### Related ideas
 
-Shares infrastructure with [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle), which addresses AI discoverability at the site level while this addresses it at the page level. Produces parseability scores that could feed into [Content staleness detector](#content-staleness-detector) as an additional quality signal.
+Shares infrastructure with [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle), which addresses AI discoverability at the site level while this validates overall agent accessibility. The spec's `llms.txt` checks (existence, validity, size, link resolution, freshness) overlap with that idea's llms.txt generation; use together for build-time generation plus runtime validation. Produces agent accessibility scores that could feed into [Content staleness detector](#content-staleness-detector) as an additional quality signal.
 
 ---
 
@@ -877,7 +889,7 @@ The foundational [GEO paper from Princeton, Georgia Tech, and IIT Delhi](https:/
 
 #### Related ideas
 
-Pairs with [AI parseability validation](#ai-parseability-validation), which evaluates whether docs are structurally optimized for AI; this tests what AI actually says. Complements [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle), which controls what AI crawlers access.
+Pairs with [Agent-friendly documentation validation](#agent-friendly-documentation-validation), which evaluates whether docs are structurally optimized for agents and AI systems; this tests what AI actually says. Complements [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle), which controls what AI crawlers access.
 
 ---
 
@@ -920,7 +932,7 @@ Every AI coding assistant with MCP support gets access to current documentation.
 
 #### Related ideas
 
-Complements [AI parseability validation](#ai-parseability-validation), which optimizes doc structure for AI consumption; this provides the transport layer for AI to query that documentation. Complements [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle): llms.txt is a passive index for AI crawlers; the MCP server is an active API for AI systems that query at inference time.
+Complements [Agent-friendly documentation validation](#agent-friendly-documentation-validation), which validates doc structure and content for agent and AI consumption; this provides the transport layer for AI to query that documentation. Complements [llms.txt and structured data bundle](#llmstxt-and-structured-data-bundle): llms.txt is a passive index for AI crawlers; the MCP server is an active API for AI systems that query at inference time.
 
 ---
 
@@ -965,7 +977,7 @@ The [llms.txt specification](https://llmstxt.org/) was created by Jeremy Howard 
 
 #### Related ideas
 
-Part of the AI readability cluster with [AI parseability validation](#ai-parseability-validation), [Ghost reader report](#ghost-reader-report), and [MCP server for documentation](#mcp-server-for-documentation). llms.txt provides a passive index; the MCP server provides an active API. Both are needed; different AI systems use different consumption patterns.
+Part of the AI readability cluster with [Agent-friendly documentation validation](#agent-friendly-documentation-validation), [Ghost reader report](#ghost-reader-report), and [MCP server for documentation](#mcp-server-for-documentation). llms.txt provides a passive index; the MCP server provides an active API. Both are needed; different AI systems use different consumption patterns.
 
 ---
 

@@ -113,6 +113,6 @@ If your idea does not meet these standards yet, submit it anyway and note what i
 
 ## Notes
 
-- **Google Docs exports.** If you draft your idea in Google Docs and export to Markdown, run `scripts/clean-export.sh` on the file before committing. It strips smart quotes, non-breaking spaces, zero-width characters, and heading attribute syntax that Google Docs exports introduce.
+- **Google Docs exports.** If you draft your idea in Google Docs and export to Markdown, strips smart quotes, non-breaking spaces, zero-width characters, and heading attribute syntax that Google Docs exports introduce.
 - **Anchor links.** GitHub auto-generates heading anchors from heading text: lowercase, spaces become hyphens, special characters are removed. You do not need to add manual anchor IDs.
 - **License.** Contributions are licensed under the [MIT License](LICENSE).
