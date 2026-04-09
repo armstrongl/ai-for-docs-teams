@@ -82,7 +82,7 @@ The pipeline could operate at three levels.
 
 **Level 1** (deterministic + AI): a periodic scan of shared drives and document management systems identifies engineering documents that reference documentation needs. An LLM extracts what documentation is needed, what product area it covers, and what the expected timeline is.
 
-**Level 2** (deterministic + AI): the pipeline hooks into GitHub's webhook events on your engineering repos via existing CI infrastructure. When a PR merges, a GitHub Action sends the diff to an LLM along with an index of all documentation topics in your content directory. The LLM identifies which docs are potentially affected and outputs a structured list. A likely starting point is adding a documentation impact step to an existing PR workflow rather than building a new one.
+**Level 2** (deterministic + AI): the pipeline hooks into GitHub's webhook events on your engineering repos via existing CI infrastructure. When a PR merges, a GitHub Action sends the diff to an LLM along with an index of all documentation topics in your content directory. The LLM identifies which docs are potentially affected and outputs a structured list. For API-heavy repos, a deterministic pre-pass with [oasdiff](https://github.com/oasdiff/oasdiff) or generated CLI `--help` snapshots can mark obvious contract changes before semantic matching, which reduces both cost and false positives. A likely starting point is adding a documentation impact step to an existing PR workflow rather than building a new one.
 
 **Level 3** (AI): when Level 2 classifies a change as docs-impacting, the diff plus the existing page is fed to an LLM that generates a draft update following your style guide. The draft is explicitly labeled as AI-generated and goes into a ticket, never published automatically.
 
@@ -100,6 +100,8 @@ Estimated time savings of 3 to 5 hours per week in manual PR monitoring across t
 
 - [Fiberplane Drift](https://github.com/fiberplane/drift) (TypeScript/Go, MIT): anchors markdown and MDX files to specific source code symbols using tree-sitter AST fingerprinting, then runs `drift check` in CI. Supports TypeScript, Python, Rust, Go, Zig, and Java on the code side; language-agnostic on the docs side.
 - [driftcheck](https://github.com/deichrenner/driftcheck) (Go, January 2026): LLM-powered pre-push hook that parses staged diffs, uses semantic search to find related docs, and flags factual contradictions. Requires an OpenAI-compatible API key.
+- [oasdiff](https://github.com/oasdiff/oasdiff) (Go, Apache 2.0): compares OpenAPI specs, detects breaking and additive changes, and emits changelogs or GitHub-friendly annotations. It is a strong deterministic front-end when part of the documentation surface is API reference content.
+- [reviewdog](https://github.com/reviewdog/reviewdog) (Go, MIT): routes findings from drift detectors back into PR comments or GitHub checks so docs-impact signals show up where engineers already work.
 - [Promptless](https://promptless.ai/) (commercial, YC W25): full end-to-end commercial pattern with [Vale](https://vale.sh/) integration for style matching. Confirms the architecture is production-proven at scale.
 
 #### Related ideas
@@ -125,7 +127,7 @@ Entity extraction adds a second AI layer: parsing pages to identify product name
 
 Two complementary layers, one deterministic and one semantic.
 
-**Layer 1** (semantic, AI): embed all documentation topics using [sentence-transformers](https://github.com/huggingface/sentence-transformers) (specifically `all-MiniLM-L6-v2`, which is 5x faster than `all-mpnet-base-v2` with comparable quality) and store vectors in [Qdrant](https://github.com/qdrant/qdrant) for fast semantic similarity queries. When a writer inputs a concept, feature name, or code change description, the tool returns the top-k most semantically relevant documentation pages with similarity scores.
+**Layer 1** (semantic, AI): embed all documentation topics using [sentence-transformers](https://github.com/huggingface/sentence-transformers) (specifically `all-MiniLM-L6-v2`, which is 5x faster than `all-mpnet-base-v2` with comparable quality) and store vectors in [Qdrant](https://github.com/qdrant/qdrant) for fast semantic similarity queries. If you want a lighter runtime, [FastEmbed](https://github.com/qdrant/fastembed) paired with Qdrant is often enough for a CPU-only proof of concept. When a writer inputs a concept, feature name, or code change description, the tool returns the top-k most semantically relevant documentation pages with similarity scores.
 
 **Layer 2** (deterministic, historical): mine the git history using [code-maat](https://github.com/adamtornhill/code-maat) (`-a coupling`) to compute change coupling: which doc files always change in the same commits. A doc file and a code file that frequently co-occur in commits are blast-radius candidates even when they share no semantic similarity.
 
@@ -143,8 +145,10 @@ Reduces the risk of incomplete documentation updates from high to near-zero for 
 
 - [code-maat](https://github.com/adamtornhill/code-maat) (Clojure CLI): mines VCS logs to compute change coupling via `-a coupling`. The `-g` grouping flag maps individual files to logical components for architectural-level analysis.
 - [Qdrant](https://github.com/qdrant/qdrant) (Rust, Apache 2.0, 29K GitHub stars): high-performance vector database with hybrid dense-sparse retrieval, metadata filtering, and a simple REST API.
+- [FastEmbed](https://github.com/qdrant/fastembed) (Python, Apache 2.0): lightweight embedding generation using ONNX Runtime. Good fit for CI jobs or local tools where a full transformer stack is heavier than necessary.
 - [txtai](https://github.com/neuml/txtai) (Python, Apache 2.0): combines an embeddings database, graph networks, and a relational database in a single library. A potential all-in-one solution for the hybrid semantic-plus-graph query this tool needs.
 - [sentence-transformers](https://github.com/huggingface/sentence-transformers) (Python, Apache 2.0): provides the embedding model; `all-MiniLM-L6-v2` (384 dimensions) is the recommended starting model.
+- [Neo4j GraphRAG](https://pypi.org/project/neo4j-graphrag/) (Python, Apache 2.0): adds graph-native retrieval on top of a relationship store, which is useful once the blast radius model evolves from simple page similarity into entity traversal.
 
 #### Related ideas
 
@@ -167,7 +171,7 @@ A simple "last modified date" check tells you when a page was last touched but n
 
 The system operates in two layers shipped sequentially.
 
-**Layer 1** (deterministic, ships day 1): run `git effort` from [git-extras](https://github.com/tj/git-extras) against your content directory to produce a ranked staleness report by commit count and active days per file. Cross-reference with frontmatter freshness values (if present) to produce a composite staleness score: pages with old freshness dates and low recent commit activity score highest. This layer produces an immediately actionable prioritized list with no AI dependency. A GitHub Actions workflow can run this on a weekly schedule and post results to a ticket.
+**Layer 1** (deterministic, ships day 1): run `git effort` from [git-extras](https://github.com/tj/git-extras) against your content directory to produce a ranked staleness report by commit count and active days per file. Cross-reference with frontmatter freshness values (if present) to produce a composite staleness score: pages with old freshness dates and low recent commit activity score highest. If you already collect git analytics in SQL, [MergeStat](https://docs.mergestat.com/) can join doc age with nearby code churn by directory or component, which makes the score more useful than page age alone. This layer produces an immediately actionable prioritized list with no AI dependency. A GitHub Actions workflow can run this on a weekly schedule and post results to a ticket.
 
 **Layer 2** (AI, adds semantic drift): when a page scores above the staleness threshold, an LLM compares the page's claims against recent git log entries and release notes from your engineering repos. The LLM outputs a structured flag: `{page, claim, last_validated, recent_change, confidence}`. High-confidence flags go directly into the weekly report as "verify this specific claim." A focused sprint scope: scan a single high-traffic content directory against the corresponding source code directory's recent commit log.
 
@@ -182,9 +186,10 @@ The [IBM Think Insights analysis of watsonx Code Assistant](https://www.ibm.com/
 #### Recommended tools
 
 - [git-extras](https://github.com/tj/git-extras) (shell, `brew install git-extras`): provides `git effort`, which shows commits per file and active days per file across a directory. Produces an immediately actionable staleness ranked list in minutes.
+- [mergestat-lite](https://github.com/mergestat/mergestat-lite) (Go/SQLite, MIT): SQL-queryable git history that lets you correlate page age with nearby code churn, ownership, or release activity instead of ranking by age alone.
 - [Swimm](https://swimm.io/) (JavaScript/TypeScript, GitHub Marketplace): anchors documentation pages to source code symbols. Its [GitHub app](https://github.com/marketplace/swimm-io) runs a check on every PR when coupled documentation drifts.
 - [Dosu](https://dosu.dev/) (SaaS, [GitHub](https://github.com/dosu-ai)): monitors repository changes, checks whether documentation aligns with reality, and creates draft updates for human review. Used by over 16,000 repositories including LangChain and Apache Superset.
-- [Frouros](https://github.com/IFCA-Advanced-Computing/frouros) (Python, open source): embedding-based drift detection algorithms applicable to documentation content embeddings over time.
+- [Frouros](https://github.com/IFCA-Advanced-Computing/frouros) (Python, BSD-3-Clause): embedding-based drift detection algorithms applicable to documentation content embeddings over time.
 
 #### Related ideas
 
@@ -211,7 +216,7 @@ This project requires two AI capabilities. First, **semantic embeddings** to map
 
 #### How it might work
 
-Three stages. **Stage 1** (deterministic): parse all documentation pages, extract all instances of tracked terms from your linter's terminology registry, and build a co-occurrence matrix showing which terms appear together on which pages. Pages that always change together in git history but never cross-reference each other are flagged as missing-link candidates. **Stage 2** (AI): an LLM receives batches of pages with high embedding similarity and classifies whether each shared term is being used consistently or with different meanings. The output is structured: `{term, pages, finding, confidence}`. **Stage 3** (deterministic): the report is diffed against the term registry, and a ticket is filed for each newly detected inconsistency.
+Three stages. **Stage 1** (deterministic): parse all documentation pages, extract all instances of tracked terms from your linter's terminology registry, and optionally run [spaCy's EntityRuler](https://spacy.io/api/entityruler) to capture adjacent product names, commands, and config keys as graph nodes. Build a co-occurrence matrix showing which terms appear together on which pages. Pages that always change together in git history but never cross-reference each other are flagged as missing-link candidates. **Stage 2** (AI): an LLM receives batches of pages with high embedding similarity and classifies whether each shared term is being used consistently or with different meanings. The output is structured: `{term, pages, finding, confidence}`. **Stage 3** (deterministic): the report is diffed against the term registry, and a ticket is filed for each newly detected inconsistency.
 
 For a focused sprint, start with a single product area and one high-density cross-cutting term like "policy," generating the first version of the term graph before scaling to the full doc set.
 
@@ -227,7 +232,9 @@ Eliminates the manual burden of style guide enforcement by automating detection 
 
 - [sentence-transformers](https://github.com/UKPLab/sentence-transformers) (Python, MIT): provides the embedding backbone. The `all-MiniLM-L6-v2` model is 22MB, runs locally, and processes hundreds of sentences per second.
 - [code-maat](https://github.com/adamtornhill/code-maat) (Clojure, Eclipse Public License): temporal coupling analysis from git history for the missing-link signal.
+- [spaCy](https://github.com/explosion/spaCy) (Python, MIT): provides rule-based and statistical entity extraction. Its `EntityRuler` is especially useful for bootstrapping a terminology graph from existing product nouns, commands, and configuration keys.
 - [Vale](https://vale.sh/) (Go, MIT): the deterministic foundation. This engine adds the semantic analysis layer on top rather than replacing it.
+- [Neo4j GraphRAG](https://pypi.org/project/neo4j-graphrag/) (Python, Apache 2.0): useful if the terminology registry grows into a graph-backed system where cross-product term relationships need to be traversed, not just listed.
 
 #### Related ideas
 
@@ -250,7 +257,7 @@ Detecting that two different descriptions of the same mechanism contradict each 
 
 Three stages. **Stage 1** (deterministic): parse every doc page and extract tags and related-page frontmatter to build a page-pair graph. Pages linked by related fields or sharing two or more tags are candidate pairs. **Stage 2** (AI): for each pair, an LLM receives both pages and identifies passages describing the same concept, flagging contradictions. Chain-of-thought prompting improves accuracy. Output: `{page_a, page_b, concept, passage_a, passage_b, conflict_type, severity}`. **Stage 3** (deterministic): aggregate into a Markdown report sorted by severity. A writer reviews each flag, since some variation is intentional.
 
-The [KnowledgeBase Guardian pattern](https://github.com/datarootsio/knowledgebase_guardian), which retrieves semantically similar documents first then runs LLM comparison only on high-similarity pairs, reduces LLM calls and makes the scan cost-effective at scale. For a focused sprint, target a single high-churn content directory.
+The [KnowledgeBase Guardian pattern](https://github.com/datarootsio/knowledgebase_guardian), which retrieves semantically similar documents first then runs LLM comparison only on high-similarity pairs, reduces LLM calls and makes the scan cost-effective at scale. [Promptfoo](https://github.com/promptfoo/promptfoo) can turn the highest-risk page pairs into a standing regression suite so the same contradiction checks run before every release. For a focused sprint, target a single high-churn content directory.
 
 #### The value it will bring
 
@@ -264,6 +271,7 @@ Catches a class of documentation errors no existing linter can detect. Prevents 
 
 - [KnowledgeBase Guardian](https://github.com/datarootsio/knowledgebase_guardian) (Python, Dataroots): implements the retrieve-then-compare pattern. Embeds documents, retrieves similar pairs, uses an LLM to check for contradictions.
 - [RAGAS](https://github.com/explodinggradients/ragas) (Python): provides faithfulness and factual correctness metrics adaptable to consistency scoring.
+- [Promptfoo](https://github.com/promptfoo/promptfoo) (TypeScript, MIT): declarative LLM evaluation harness that can keep a contradiction test suite in CI once you have identified the high-risk page pairs.
 - [Vale](https://vale.sh/) (Go): handles the deterministic string-matching layer already in the pipeline.
 
 #### Related ideas
@@ -291,7 +299,7 @@ Three layers, each building on the previous.
 
 **Layer 2** (deterministic, milliseconds): a script applies linter substitution rules as direct string replacements. Handles all mechanical swaps without calling an LLM.
 
-**Layer 3** (AI, seconds per file): for violations that survive Layers 1 and 2, the pipeline runs the linter in JSON mode, extracts violation context (the flagged sentence plus 2 surrounding sentences), and sends batched rewrite requests to an LLM with a prompt specifying the rule violated, the style guide rationale, and an instruction to preserve technical accuracy. The rewritten passage replaces the original. The linter runs again. If new violations appear, the loop repeats, stopping after 3 consecutive iterations without improvement, matching the [LLM-Ninja](https://github.com/corelight/LLM-Ninja) behavior.
+**Layer 3** (AI, seconds per file): for violations that survive Layers 1 and 2, the pipeline runs the linter in JSON mode, extracts violation context (the flagged sentence plus 2 surrounding sentences), and sends batched rewrite requests to an LLM with a prompt specifying the rule violated, the style guide rationale, and an instruction to preserve technical accuracy. The rewritten passage replaces the original. The linter runs again. If new violations appear, the loop repeats, stopping after 3 consecutive iterations without improvement, matching the [LLM-Ninja](https://github.com/corelight/LLM-Ninja) behavior. In CI, [reviewdog](https://github.com/reviewdog/reviewdog) can publish accepted rewrites back to the PR as suggestions instead of pushing directly, which keeps human approval in the loop.
 
 For a focused sprint, target a single high-violation directory as a batch fix, demonstrating end-to-end pipeline without requiring CI integration.
 
@@ -308,6 +316,7 @@ Corelight's [LLM-Ninja](https://github.com/corelight/LLM-Ninja), documented in t
 - [LLM-Ninja](https://github.com/corelight/LLM-Ninja) (Python): the direct architectural predecessor. Runs Vale in JSON mode, extracts violations, generates rewrite prompts, calls an LLM, applies rewrites, and iterates until clean.
 - [markdownlint-cli2](https://github.com/DavidAnson/markdownlint-cli2) (Node.js): handles Layer 1 deterministic formatting fixes.
 - [Vale](https://vale.sh/) (Go): the linting engine. Run in `--output=JSON` mode for the machine-readable violation list that feeds the AI rewrite layer.
+- [reviewdog](https://github.com/reviewdog/reviewdog) (Go, MIT): turns linter and rewrite output into inline PR comments or multi-line suggestions, which makes the auto-fix workflow easier to adopt incrementally.
 
 #### Related ideas
 
@@ -330,7 +339,7 @@ Deterministic heuristics (shared headings, overlapping keyword density) catch th
 
 Two complementary scopes sharing infrastructure.
 
-**Page-level duplication detection:** embed all pages using a lightweight embedding model and compute pairwise cosine similarity for pages in the same product area or content type. Page pairs exceeding a configurable threshold (starting at 0.80) are flagged for review. Run as a monthly scheduled CI job and as a check on new pages.
+**Page-level duplication detection:** embed all pages using a lightweight embedding model such as [FastEmbed](https://github.com/qdrant/fastembed) or [sentence-transformers](https://github.com/UKPLab/sentence-transformers) and compute pairwise cosine similarity for pages in the same product area or content type. Page pairs exceeding a configurable threshold (starting at 0.80) are flagged for review. Run as a monthly scheduled CI job and as a check on new pages.
 
 **Snippet awareness pipeline:** three tiers. Tier 1 (deterministic): create a linter rule for each stable snippet. The rule's regex matches inline text the snippet replaces and suggests the reusable component. Tier 2 (AI): embed all snippets. On PR, embed new content at the paragraph level. Post a PR comment when similarity exceeds threshold: "This paragraph is 87% similar to the standard prerequisites snippet. Consider using it instead." Tier 3 (AI): a CLI tool for pre-authoring search against the snippet library.
 
@@ -348,6 +357,7 @@ One-time: identifies the existing duplication backlog and snippet candidates. On
 
 - [jscpd](https://github.com/kucherenko/jscpd) (JavaScript/TypeScript, MIT): Rabin-Karp copy/paste detection across 170+ formats including MDX. Integrates with GitHub Actions via [MegaLinter](https://github.com/oxsecurity/megalinter).
 - [SemHash](https://github.com/MinishLab/semhash) (Python, MIT): fast semantic deduplication using Model2Vec embeddings. Runs without a GPU, scales to millions of records.
+- [FastEmbed](https://github.com/qdrant/fastembed) (Python, Apache 2.0): fast CPU-first embeddings for paragraph or page similarity jobs that need to run in CI or on a writer laptop.
 - [sentence-transformers](https://github.com/UKPLab/sentence-transformers) (Python, Apache 2.0): paragraph-level embedding models for the snippet awareness pipeline.
 
 #### Related ideas
@@ -371,7 +381,7 @@ Extracting every user-facing surface from a codebase and cross-referencing each 
 
 Three stages.
 
-**Stage 1**, gap extraction (AI): an agent crawls the codebase to extract every user-facing surface. It classifies each by audience (user, developer, integrator, operator) and documentation type, then cross-references against the doc set to identify complete gaps (features not documented at all). Confidence scoring flags uncertain classifications.
+**Stage 1**, gap extraction (AI): an agent crawls the codebase to extract every user-facing surface. Use surface-specific extractors before the AI pass: [oasdiff](https://github.com/oasdiff/oasdiff) for OpenAPI specs, generated CLI `--help` snapshots or [tree-sitter](https://tree-sitter.github.io/tree-sitter/) parsers for command and config definitions, and route manifests for UI paths. The agent classifies each extracted surface by audience (user, developer, integrator, operator) and documentation type, then cross-references against the doc set to identify complete gaps (features not documented at all). Confidence scoring flags uncertain classifications.
 
 **Stage 2**, quality assessment (AI): a second agent runs against existing docs in gap-adjacent areas to identify partial gaps: pages that exist but don't adequately cover the feature. This catches the pattern where a page exists but states incorrect information rather than covering the feature completely.
 
@@ -389,9 +399,10 @@ First-ever complete picture of documentation coverage across all topics and all 
 
 #### Recommended tools
 
-- [mergestat-lite](https://github.com/mergestat/mergestat-lite) (Go/SQLite): SQL-queryable git history for commit-recency ranking.
-- [git-fame](https://github.com/casperdcl/git-fame) (Python): blame-based ownership analysis by file extension. Identifies zero-owner pages at highest coverage risk.
-- [gitinspector](https://github.com/ejwa/gitinspector) (Python): identifies knowledge silos; docs pages attributed to a single author are the highest ownership risk when that author departs.
+- [oasdiff](https://github.com/oasdiff/oasdiff) (Go, Apache 2.0): compares OpenAPI specs and produces breaking-change or changelog reports. Ideal for extracting API surfaces before the semantic matching pass.
+- [tree-sitter](https://github.com/tree-sitter/tree-sitter) (C/Rust, MIT): incremental parser generator with mature grammars across languages. Useful for extracting CLI definitions, config constants, and route declarations from source instead of scraping text.
+- [mergestat-lite](https://github.com/mergestat/mergestat-lite) (Go/SQLite, MIT): SQL-queryable git history for commit-recency ranking and delta tracking.
+- [git-fame](https://github.com/casperdcl/git-fame) (Python): blame-based ownership analysis by file extension. Identifies zero-owner or single-owner areas at the highest long-term coverage risk.
 
 #### Related ideas
 
@@ -420,7 +431,7 @@ A GitHub Actions workflow triggers on `pull_request` events for changes to your 
 
 **Layer 2** (AI semantic classification): for PRs the heuristic layer scores as ambiguous or medium-risk, the diff is sent to an LLM along with the relevant doc type template and a sample of related pages. The LLM classifies each changed section and produces a structured review comment covering risk level, structural adherence, terminology consistency, and potential factual inconsistencies.
 
-The classification posts as a PR comment: a risk badge followed by a structured breakdown. Behavioral and destructive changes get flagged for mandatory human review; cosmetic changes can be auto-approved or collapsed. The [coderabbitai/ai-pr-reviewer](https://github.com/coderabbitai/ai-pr-reviewer) GitHub Action provides a reference implementation for the hunk-level review architecture.
+The classification posts as a PR comment: a risk badge followed by a structured breakdown. Behavioral and destructive changes get flagged for mandatory human review; cosmetic changes can be auto-approved or collapsed. [reviewdog](https://github.com/reviewdog/reviewdog) or [Danger JS](https://danger.systems/js/) can publish the resulting badge, summary, and suggested follow-up actions directly into the PR conversation. The [coderabbitai/ai-pr-reviewer](https://github.com/coderabbitai/ai-pr-reviewer) GitHub Action provides a reference implementation for the hunk-level review architecture.
 
 #### The value it will bring
 
@@ -435,6 +446,8 @@ A [large-scale empirical study of GenAI-based code review actions on GitHub](htt
 - [coderabbitai/ai-pr-reviewer](https://github.com/coderabbitai/ai-pr-reviewer) (TypeScript, GitHub Action): open-source reference implementation for AI-based PR summarization and hunk-level review.
 - [Doc Detective](https://github.com/doc-detective/doc-detective) (JavaScript/Node.js): adds a verification layer. When the classifier labels a change as "behavioral," Doc Detective can execute the described steps to confirm they work.
 - [Vale](https://vale.sh/) (Go): handles the mechanical first layer; the triage bot extends it with semantic classification.
+- [reviewdog](https://github.com/reviewdog/reviewdog) (Go, MIT): turns classifier output into GitHub checks or inline comments so the triage signal is visible without building a custom bot UI.
+- [Danger JS](https://danger.systems/js/) (JavaScript, MIT): lightweight PR automation framework for posting risk summaries, assigning labels, or blocking merges when the classifier marks a change as destructive.
 
 #### Related ideas
 
@@ -459,7 +472,7 @@ Two phases.
 
 **Phase 1** (AI, one-time): analyze the last 12 months of merged PRs using the GitHub API. Extract diffs, files changed, and whether each PR merged without revision. Pass to an LLM: "Identify structural characteristics of PRs that merged without revision requests. Which patterns are both consistent and low-risk?" Output: a formal spec of the safe-edit class as deterministic predicates: (a) only doc files changed, (b) changes match semver version bump patterns, (c) changes match a URL swap where old URL returns 404 and new URL returns 200, (d) diff matches known-safe linter auto-fix patterns.
 
-**Phase 2** (deterministic, CI): implement predicates as a GitHub Actions workflow. If all changes satisfy safe-edit predicates AND all existing CI checks pass, the workflow calls the [GitHub auto-merge API](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request). Any change that fails any predicate routes to normal human review unchanged. Start with the two highest-confidence predicates (URL swaps and version bumps).
+**Phase 2** (deterministic, CI): implement predicates as a GitHub Actions workflow. If all changes satisfy safe-edit predicates AND all existing CI checks pass, the workflow calls the [GitHub auto-merge API](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request). Any change that fails any predicate routes to normal human review unchanged. A merge queue or [Mergify](https://docs.mergify.com/) rule set can enforce the same branch protections on auto-merged docs PRs as on human-reviewed ones. Start with the two highest-confidence predicates (URL swaps and version bumps).
 
 #### The value it will bring
 
@@ -472,7 +485,7 @@ Faster time-to-merge for mechanical changes. URL swaps and version bumps that si
 #### Recommended tools
 
 - [peter-evans/enable-pull-request-automerge](https://github.com/peter-evans/enable-pull-request-automerge) (JavaScript, MIT): GitHub Action that enables auto-merge programmatically.
-- [pascalgn/automerge-action](https://github.com/pascalgn/automerge-action) (JavaScript, MIT): configurable auto-merge rules with label-based and status-check-based conditions.
+- [Mergify](https://docs.mergify.com/) (commercial): rules engine and merge queue for GitHub pull requests. Useful if you want stronger policy management, auditability, and queueing than a single custom Action provides.
 - [Renovate](https://github.com/renovatebot/renovate) (TypeScript, AGPL-3.0): the most mature example of rule-based auto-merge with audit trails.
 
 #### Related ideas
@@ -503,7 +516,7 @@ A focused sprint could generate four to six new hooks using AI, then deploy them
 1. **Internal link reference format**: validates that internal links use the correct format and prefixes per your conventions
 1. **Redirect completeness check**: validates that pages being renamed or moved have corresponding redirect entries
 
-Tools reduce the custom hook count. [rumdl](https://github.com/rvben/rumdl) (Rust, installable via pip/brew/npm) implements 71 lint rules with MDX flavor auto-detection, covering heading hierarchy and code block language tag validation. It is [5x faster than markdownlint-cli2](https://github.com/rvben/rumdl-vscode) and has a [pre-commit hook repo](https://github.com/rvben/rumdl-pre-commit). [remark-lint-frontmatter-schema](https://github.com/JulianCataldo/remark-lint-frontmatter-schema) validates frontmatter against a JSON schema.
+Tools reduce the custom hook count. [rumdl](https://github.com/rvben/rumdl) (Rust, installable via pip/brew/npm) implements 71 lint rules with MDX flavor auto-detection, covering heading hierarchy and code block language tag validation. It is [5x faster than markdownlint-cli2](https://github.com/rvben/rumdl-vscode) and has a [pre-commit hook repo](https://github.com/rvben/rumdl-pre-commit). [remark-lint-frontmatter-schema](https://github.com/JulianCataldo/remark-lint-frontmatter-schema) validates frontmatter against a JSON schema. [lychee](https://github.com/lycheeverse/lychee) covers link integrity, and [check-jsonschema](https://check-jsonschema.readthedocs.io/en/latest/precommit_usage.html) covers redirect manifests or frontmatter files expressed as YAML or JSON.
 
 #### The value it will bring
 
@@ -517,6 +530,8 @@ Each hook permanently eliminates one category of structural error from entering 
 
 - [rumdl](https://github.com/rvben/rumdl) (Rust): 71 MDX-aware lint rules, auto-detects `.mdx` flavor, with an official [pre-commit hook integration](https://github.com/rvben/rumdl-pre-commit).
 - [remark-lint-frontmatter-schema](https://github.com/JulianCataldo/remark-lint-frontmatter-schema) (JavaScript/remark): validates frontmatter against a JSON schema.
+- [check-jsonschema](https://check-jsonschema.readthedocs.io/en/latest/precommit_usage.html) (Python, MIT): validates YAML or JSON files against JSON Schema inside `pre-commit`. Useful for frontmatter sidecars, redirects manifests, and other structured docs metadata.
+- [lychee](https://github.com/lycheeverse/lychee) (Rust, Apache 2.0 or MIT): fast link checker for Markdown, HTML, and plain text. Good fit for catching broken external references before a PR is opened.
 - [pre-commit-hooks](https://github.com/pre-commit/pre-commit-hooks) (Python): the official pre-commit hooks collection including `check-yaml`, `check-json`, `check-symlinks`, and `trailing-whitespace`.
 
 #### Related ideas
@@ -542,7 +557,7 @@ Testing whether a document answers a question like "How do I set up feature X on
 
 Two testing approaches.
 
-**Comprehension testing:** for high-traffic pages, define a set of questions per page and store them in a YAML spec file alongside the documentation. In CI, the content and question list are fed to an LLM with a system prompt asking it to answer each question and score its confidence that the answer is complete and findable. [RAGAS faithfulness and answer-relevancy metrics](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/) provide the scoring framework. A score below threshold generates a warning annotation on the PR.
+**Comprehension testing:** for high-traffic pages, define a set of questions per page and store them in a YAML spec file alongside the documentation. In CI, the content and question list are fed to an LLM with a system prompt asking it to answer each question and score its confidence that the answer is complete and findable. [RAGAS faithfulness and answer-relevancy metrics](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/) provide the scoring framework. [Promptfoo](https://github.com/promptfoo/promptfoo) is a practical fit if you want model-vs-model comparisons or a simple YAML-based eval harness before adopting a Python test framework. A score below threshold generates a warning annotation on the PR.
 
 **Procedure testing:** [Doc Detective](https://docs.doc-detective.com/)'s AI-assisted test generation reads documentation pages and identifies step-by-step procedures. It generates test specs (structured YAML defining link checks, UI interactions, and shell commands) that execute against the actual product. Doc Detective's `runShell` action can validate CLI outputs.
 
@@ -561,6 +576,7 @@ Automated regression detection for documentation. When a page is rewritten, comp
 - [Doc Detective](https://github.com/doc-detective/doc-detective) (JavaScript/Node.js, Apache 2.0): the primary execution framework. Parses doc files, executes UI and CLI actions, reports PASS/FAIL. Includes [agent tools](https://github.com/doc-detective/agent-tools) for AI-assisted spec generation.
 - [RAGAS](https://github.com/explodinggradients/ragas) (Python, Apache 2.0): faithfulness, answer-relevancy, and context-recall metrics for documentation completeness scoring.
 - [DeepEval](https://github.com/confident-ai/deepeval) (Python, Apache 2.0): wraps RAGAS metrics in a PyTest-compatible framework with CI/CD integration.
+- [Promptfoo](https://github.com/promptfoo/promptfoo) (TypeScript, MIT): declarative LLM evaluation harness with CI integrations. Useful for keeping a question bank and grading rubric in version control without writing custom test runners first.
 - [textstat](https://pypi.org/project/textstat/) (Python, MIT): readability scoring across all major formulas.
 
 #### Related ideas
@@ -584,7 +600,7 @@ Simulating how a specific reader type would experience a document requires model
 
 Define a small set of standard personas in YAML files (`persona-new-user.yaml`, `persona-experienced-admin.yaml`, `persona-evaluator.yaml`, `persona-developer.yaml`, `persona-desperate-debugger.yaml`), each specifying the persona's knowledge level, goals, constraints, and known failure modes. Feed a documentation page plus a persona file to an LLM. The LLM plays the persona reading the page, then produces a structured report: passages where the persona would get confused, assumptions the page makes that the persona wouldn't share, steps the persona would fail on, and the point where the persona would abandon the page. The report is formatted as inline comments with severity ratings.
 
-Three tools exist for this: [Impersonaid](https://github.com/theletterf/impersonaid) (Python CLI) is an open-source CLI with YAML-defined personas that runs against any text file. The [reader-simulator pattern](https://www.cherryleaf.com/2025/11/testing-documentation-with-ai-the-reader-simulator/) (CT Smith, Payabli) uses the Claude API and has been validated against documentation usability benchmarks. [Megapersonas](https://instrktiv.com/en/blog/tools-efficiency/user-testing-manuals-with-megapersonas/) simulates hundreds of realistic users simultaneously.
+Three tools exist for this: [Impersonaid](https://github.com/theletterf/impersonaid) (Python CLI) is an open-source CLI with YAML-defined personas that runs against any text file. [Promptfoo](https://github.com/promptfoo/promptfoo) can parameterize the same page against multiple persona files and produce diffable reports in CI. The [reader-simulator pattern](https://www.cherryleaf.com/2025/11/testing-documentation-with-ai-the-reader-simulator/) (CT Smith, Payabli) uses the Claude API and has been validated against documentation usability benchmarks. [Megapersonas](https://instrktiv.com/en/blog/tools-efficiency/user-testing-manuals-with-megapersonas/) simulates hundreds of realistic users simultaneously.
 
 For a focused sprint: five high-traffic pages evaluated against all five personas, producing a structured report the team can use to prioritize content improvements.
 
@@ -599,7 +615,7 @@ Surfaces navigation friction, missing context, and unclear procedures from persp
 #### Recommended tools
 
 - [Impersonaid](https://github.com/theletterf/impersonaid) (Python, open-source): CLI tool for documentation testing with YAML-defined personas. Accepts any text file as input.
-- [PersonaGym](https://aclanthology.org/2025.findings-emnlp.pdf): evaluation benchmarks for measuring persona accuracy.
+- [Promptfoo](https://github.com/promptfoo/promptfoo) (TypeScript, MIT): runs persona-specific prompts and assertions from YAML, which makes it a good harness for recurring usability simulations in CI.
 - [textstat](https://pypi.org/project/textstat/) (Python, MIT): deterministic readability scoring that complements persona simulation.
 
 #### Related ideas
@@ -627,7 +643,7 @@ Three stages.
 
 **Stage 2** (deterministic, extraction): [doccmd](https://github.com/adamtheturtle/doccmd) reads the manifest and extracts only classified-valid blocks, creating temporary files with accurate line numbers.
 
-**Stage 3** (deterministic, validation): validators run per schema type. Failures report the doc file path and line number, linking the error directly to the source. The full pipeline runs as a GitHub Action alongside existing linter workflows. Start non-blocking to establish a baseline, then promote to blocking once violations are cleared.
+**Stage 3** (deterministic, validation): validators run per schema type. Use [check-jsonschema](https://check-jsonschema.readthedocs.io/en/latest/precommit_usage.html) or [Ajv](https://ajv.js.org/json-schema) for JSON and YAML schemas, [CUE](https://cuelang.org/) when the product already expresses config contracts in CUE, and format-specific validators for HCL, TOML, or Kubernetes manifests. Failures report the doc file path and line number, linking the error directly to the source. The full pipeline runs as a GitHub Action alongside existing linter workflows. Start non-blocking to establish a baseline, then promote to blocking once violations are cleared.
 
 #### The value it will bring
 
@@ -640,6 +656,9 @@ Eliminates an entire class of documentation errors. Every classified configurati
 #### Recommended tools
 
 - [doccmd](https://github.com/adamtheturtle/doccmd) (Python): extracts code blocks from documentation and runs arbitrary commands against them, with line-number-accurate error reporting.
+- [check-jsonschema](https://check-jsonschema.readthedocs.io/en/latest/precommit_usage.html) (Python, MIT): validates YAML and JSON files against JSON Schema. Useful when docs examples map cleanly to schemas already published by the product team.
+- [Ajv](https://ajv.js.org/json-schema) (JavaScript, MIT): high-performance JSON Schema validator for Node-based docs pipelines or GitHub Actions.
+- [CUE](https://cuelang.org/) (Go, Apache 2.0): validates configuration examples against a unified data schema language and can export to JSON or YAML when teams already use CUE in product configuration flows.
 - [Doc Detective](https://github.com/doc-detective/doc-detective) (Node.js): validates configuration examples by executing them. Its `runShell` action can pipe JSON through `jq --exit-status`.
 
 #### Related ideas
@@ -665,7 +684,7 @@ Describing a screenshot's visual content from raw pixels requires a vision model
 
 **Phase 1** (blitz): a Python script scans all doc files for image imports, extracts surrounding context (page title, summary, nearest headings, adjacent paragraph), and assembles a prompt pairing the image bytes with context. Each image is sent to a vision API and the returned description is inserted as the alt attribute. Images where the model returns low confidence are flagged for review. Output is organized into section-based PRs so writers review batches.
 
-**Phase 2** (ongoing): the CI workflow is extended with a check detecting new image imports without alt text, calling the same vision pipeline and posting draft descriptions as PR comments for writer approval.
+**Phase 2** (ongoing): the CI workflow is extended with a check detecting new image imports without alt text, calling the same vision pipeline and posting draft descriptions as PR comments for writer approval. For privacy-sensitive screenshots or air-gapped teams, local vision models such as [LLaVA through Ollama](https://ollama.com/blog/vision-models) are good enough for first-draft captions with a human review gate.
 
 For a focused sprint, scope to a single product area with a small number of pages to prove the pipeline end-to-end.
 
@@ -680,7 +699,9 @@ Reduces per-image effort from several minutes to seconds of review. Makes full a
 #### Recommended tools
 
 - [FigurA11y](https://github.com/allenai/figura11y) (Python/TypeScript, Allen AI): reference implementation for context-aware alt text generation. Research-grade, but the context-injection pattern is directly applicable.
-- Vision APIs: [Azure Image Analysis](https://learn.microsoft.com/en-us/azure/ai-services/computer-vision/use-case-alt-text), [Gemini Flash](https://deepmind.google/technologies/gemini/flash/), or [Claude Vision](https://docs.anthropic.com/en/docs/build-with-claude/vision).
+- [Azure Image Analysis](https://learn.microsoft.com/en-us/azure/ai-services/computer-vision/use-case-alt-text) (managed API): enterprise-friendly captioning and OCR service with confidence scoring and deployment controls.
+- [Ollama vision models](https://ollama.com/blog/vision-models) (local runtime): runs LLaVA locally for privacy-sensitive screenshots or offline first-draft captioning.
+- [Claude Vision](https://docs.anthropic.com/en/docs/build-with-claude/vision) (managed API): strong general-purpose multimodal model when the screenshot needs layout understanding as well as text extraction.
 
 #### Related ideas
 
@@ -701,7 +722,7 @@ AI designs the templates and analyzes the content framework. Scanning hundreds o
 
 #### How it might work
 
-Two stages. **Stage 1** (AI, one-time): AI analyzes existing templates, content patterns across all topics, the frontmatter schema, and the component library. It produces a configuration file mapping each content type to its template, required fields with validation rules, optional fields with defaults, components with placeholder values, and heading structure. **Stage 2** (deterministic, the shipped artifact): a CLI tool built with [Hygen](https://github.com/jondot/hygen) (EJS templates, zero configuration) or [Plop.js](https://plopjs.com/) (Handlebars templates, integrates as an npm script). Hygen is the lower-friction choice: templates co-locate with the project, the syntax is simple enough for non-engineers to maintain, and it has no runtime dependencies beyond Node.js.
+Two stages. **Stage 1** (AI, one-time): AI analyzes existing templates, content patterns across all topics, the frontmatter schema, and the component library. It produces a configuration file mapping each content type to its template, required fields with validation rules, optional fields with defaults, components with placeholder values, and heading structure. **Stage 2** (deterministic, the shipped artifact): a CLI tool built with [Hygen](https://github.com/jondot/hygen) (EJS templates, zero configuration), [Plop.js](https://plopjs.com/) (Handlebars templates, integrates as an npm script), or [Copier](https://github.com/copier-org/copier) when you want templates that can be updated over time. Hygen is the lower-friction choice: templates co-locate with the project, the syntax is simple enough for non-engineers to maintain, and it has no runtime dependencies beyond Node.js.
 
 Example invocation:
 
@@ -724,7 +745,8 @@ The scaffolding CLI pattern is well-established: [Rails generators](https://guid
 
 - [Hygen](https://github.com/jondot/hygen) (JavaScript/EJS, npm): lightweight scaffolding with frontmatter-style template metadata, zero configuration, language-agnostic output.
 - [Plop.js](https://github.com/plopjs/plop) (JavaScript/Handlebars, npm): micro-generator framework, integrates as an npm script.
-- [scaffold-cli](https://github.com/lukasbach/scaffold-cli) (TypeScript): reusable, configurable code templates.
+- [Copier](https://github.com/copier-org/copier) (Python): template renderer with update support, which is useful if the documentation team expects scaffolds to evolve and wants older generated pages to inherit template fixes.
+- [Cookiecutter](https://cookiecutter.readthedocs.io/) (Python, BSD): mature template generator with a large ecosystem of reusable scaffolds and simple prompt-driven input collection.
 
 #### Related ideas
 
@@ -747,7 +769,7 @@ AI transforms structured answers into polished prose that matches the docs team'
 
 Two stages with an optional third.
 
-**Stage 1**, structured input collection: engineers answer three to five questions at the point of highest context: when their PR is being reviewed or merged. Option A: a [GitHub PR template](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository) addition with a machine-readable comment block. Option B: a lightweight web form engineers access after their PR merges. Option A is lower friction; engineers fill it out in their PR flow. Option B is higher quality; engineers fill it out after the feature ships.
+**Stage 1**, structured input collection: engineers answer three to five questions at the point of highest context: when their PR is being reviewed or merged. Option A: a [GitHub PR template](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository) addition with a machine-readable comment block. Option B: [GitHub issue forms](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository) or a lightweight web form engineers access after their PR merges. Option A is lower friction; engineers fill it out in their PR flow. Option B is higher quality; engineers fill it out after the feature ships.
 
 **Stage 2**, draft assembly: a webhook or scheduled job reads the structured input and routes it to an AI assembly step. The AI receives: the structured answers, the inferred content type, the existing docs page most likely to need updating, and the style guide. It produces a complete draft with correct frontmatter, appropriate components, and docs-quality prose. The draft is opened as a PR with the engineer as contributor.
 
@@ -772,8 +794,9 @@ Lowers the barrier for engineering contributions to five structured fields rathe
 #### Recommended tools
 
 - [Promptless](https://promptless.ai/) (commercial, YC W25): the closest existing solution. Evaluate for direct adoption before building custom.
-- [GitHub PR templates](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests) for structured input collection.
-- [Hygen](https://github.com/jondot/hygen) for the deterministic template-to-output mapping layer.
+- [GitHub issue forms](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository) (GitHub-native): structured YAML-defined forms with required fields. Useful when the team wants machine-readable input without building a separate UI.
+- [Probot](https://probot.github.io/) (Node.js, ISC): GitHub app framework for collecting structured PR metadata, opening follow-up issues, and creating draft docs PRs from repository events.
+- [Hygen](https://github.com/jondot/hygen) (JavaScript/EJS, npm): deterministic template-to-output mapping layer once the structured answers have been collected.
 
 #### Related ideas
 
@@ -798,6 +821,7 @@ The spec's 22 checks cover structural and infrastructure problems that determini
 
 #### How it might work
 
+
 Two stages. **Stage 1** (deterministic, ships day 1): run [`afdocs`](https://afdocs.dev/) against your documentation site. This executes the spec's 22 checks across content discoverability (llms.txt existence, validity, size, link resolution, markdown links, page directives), markdown availability (URL support, content negotiation), page size and truncation risk (rendering strategy, markdown size, HTML size, content start position), content structure (tabbed content serialization, section header quality, code fence validity), URL stability (HTTP status codes, redirect behavior), observability (llms.txt freshness, markdown-HTML content parity, cache header hygiene), and authentication (auth gate detection, alternative access paths). The output is a scored report with category breakdowns, per-check pass/warn/fail results, and specific fix suggestions. Integrate into CI with the built-in vitest helper for regression detection.
 
 ```bash
@@ -818,6 +842,9 @@ The [Agent-Friendly Documentation Spec](https://agentdocsspec.com/) (v0.3.0, 202
 
 #### Recommended tools
 
+- [Docling](https://github.com/docling-project/docling) (Python, MIT): structure-preserving document parser that keeps headings, tables, and layout metadata intact before chunking or evaluation.
+- [Promptfoo](https://github.com/promptfoo/promptfoo) (TypeScript, MIT): useful for keeping a stable section-isolation eval suite in CI and comparing how different models score the same page slices.
+- [LLMTEXT](https://parallel.ai/blog/LLMTEXT-for-llmstxt) (open source): check tool for validating site-level AI-readability standards.
 - [`afdocs`](https://afdocs.dev/) ([npm](https://www.npmjs.com/package/afdocs), [GitHub](https://github.com/agent-ecosystem/afdocs)): reference implementation of the Agent-Friendly Documentation Spec. CLI tool and Node.js library running all 22 checks with scorecard output and CI integration via vitest helper.
 - [Agent-Friendly Documentation Spec](https://agentdocsspec.com/) ([GitHub](https://github.com/agent-ecosystem/agent-docs-spec)): the open spec defining the 22 checks, pass/warn/fail criteria, interaction effects, and known platform truncation limits.
 - [RAGAS](https://docs.ragas.io/) (Python, Apache 2.0): RAG evaluation framework with faithfulness, answer relevancy, context precision, and context recall metrics. Powers Stage 2 comprehension testing for teams that also serve RAG pipelines.
@@ -842,7 +869,7 @@ This is one of the few ideas where AI is both the subject being audited and a ne
 
 #### How it might work
 
-Three stages. **Stage 1** (deterministic): define a question bank of 25-40 common user questions. For each, pull the ground-truth answer from the relevant documentation page. **Stage 2** (AI, query execution): dispatch each question to ChatGPT (via OpenAI API), Perplexity (via Perplexity API), and optionally Google AI Overviews (via headless browser with [Playwright](https://github.com/microsoft/playwright)). Collect raw responses. **Stage 3** (AI, evaluation): pass each (question, ground-truth, AI-response) triple to a grader LLM with a structured prompt. Output a structured JSON report, then aggregate into a ranked report sorted by severity and frequency.
+Three stages. **Stage 1** (deterministic): define a question bank of 25-40 common user questions. For each, pull the ground-truth answer from the relevant documentation page. **Stage 2** (AI, query execution): dispatch each question to ChatGPT (via OpenAI API), Perplexity (via Perplexity API), and optionally Google AI Overviews (via headless browser with [Playwright](https://github.com/microsoft/playwright)). Collect raw responses. **Stage 3** (AI, evaluation): pass each (question, ground-truth, AI-response) triple to a grader LLM with a structured prompt. [Promptfoo](https://github.com/promptfoo/promptfoo) is a good fit for the provider matrix and grading harness because it stores providers, prompts, and assertions in versioned config files. Output a structured JSON report, then aggregate into a ranked report sorted by severity and frequency.
 
 For a focused sprint: 15 questions covering your highest-traffic topics, with ChatGPT as the sole audit target. Schedule as a weekly GitHub Action posting a Markdown report.
 
@@ -857,7 +884,7 @@ The foundational [GEO paper from Princeton, Georgia Tech, and IIT Delhi](https:/
 #### Recommended tools
 
 - [Playwright](https://github.com/microsoft/playwright) (TypeScript/Python, Apache 2.0): headless browser queries to Google AI Overviews where no API exists.
-- OpenAI and Perplexity APIs for programmatic query dispatch.
+- [Promptfoo](https://github.com/promptfoo/promptfoo) (TypeScript, MIT): provider-agnostic eval runner for storing the question bank, dispatching prompts, and grading responses against expected answers.
 - [Otterly AI](https://otterly.ai/) (SaaS): commercial tool tracking brand share of voice across AI platforms. Useful for commercial validation of the approach.
 
 #### Related ideas
@@ -884,7 +911,7 @@ A lightweight read-only MCP server built with the [TypeScript MCP SDK](https://g
 - `search_docs`: full-text and semantic search across the rendered docs, returning snippets with titles, paths, and relevance scores
 - `get_page`: retrieves the full Markdown content of a specific page by path
 
-The server indexes content from your content directory at startup. The server configuration JSON can be published in the repo so any developer can add it to their Claude Code, Cursor, or Copilot setup.
+The server indexes content from your content directory at startup. The server configuration JSON can be published in the repo so any developer can add it to their Claude Code, Cursor, or Copilot setup. [FastMCP](https://gofastmcp.com/) is useful if you want a production-ready Python wrapper around the protocol, while documentation-specific projects such as [mcpdoc](https://github.com/langchain-ai/mcpdoc) show the value of exposing `llms.txt` and docs retrieval behind a standard MCP interface.
 
 A focused sprint scope: build the server against a single product area (e.g., 6-10 pages) as a proof of concept. For deployment beyond the sprint, the server could be hosted internally or the MCP config and indexed JSON bundle could be generated at docs build time and shipped alongside the static site, requiring no server infrastructure.
 
@@ -900,7 +927,8 @@ Every AI coding assistant with MCP support gets access to current documentation.
 
 - [modelcontextprotocol/typescript-sdk](https://github.com/modelcontextprotocol/typescript-sdk) (TypeScript): official MCP SDK for building servers. Natural fit for Next.js-based docs sites.
 - [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk) (Python): official MCP SDK, alternative for non-Node stacks.
-- [MCPBook](https://lobehub.com/mcp/tcsenpai-mcpbook) (TypeScript, community): demonstrates a universal MCP server for documentation sites.
+- [FastMCP](https://gofastmcp.com/) (Python, Apache 2.0): production-oriented framework for building MCP servers with less boilerplate than the raw SDK.
+- [mcpdoc](https://github.com/langchain-ai/mcpdoc) (Python): documentation-focused MCP server that exposes `llms.txt` sources to IDEs and coding assistants. Good reference if you want a docs-first server rather than a generic repository integration.
 
 #### Related ideas
 
@@ -923,7 +951,7 @@ AI selects and ranks the top pages for `llms.txt` inclusion based on traffic sig
 
 Three independently shippable components.
 
-**Component 1**, `llms.txt` generation: AI produces a ranked list of top pages with one-line descriptions, following the [llms.txt specification](https://llmstxt.org/). A build script generates the output as a Markdown file hosted at `/llms.txt`.
+**Component 1**, `llms.txt` generation: AI produces a ranked list of top pages with one-line descriptions, following the [llms.txt specification](https://llmstxt.org/). A build script generates the output as a Markdown file hosted at `/llms.txt`. If the site already emits static HTML, [llms-txt-action](https://github.com/demodrive-ai/llms-txt-action) can crawl the built output and generate `llms.txt` and `llms-full.txt` with minimal custom code.
 
 **Component 2**, JSON-LD structured data: a build-time script reads each doc file's frontmatter (content type, title, summary, freshness date) and generates the appropriate Schema.org type. Pages with how-to content get HowTo schema with steps extracted from numbered headings. FAQ pages get FAQPage schema. All pages get Article schema as a baseline. The JSON-LD is injected into each page's `<head>` at build time.
 
@@ -941,9 +969,11 @@ The [llms.txt specification](https://llmstxt.org/) was created by Jeremy Howard 
 
 #### Recommended tools
 
-- [llms-txt-generator](https://llmstxtgenerator.org/llmstxt-documentation): format spec and validation rules.
-- [Schema.org HowTo](https://schema.org/HowTo) and [FAQPage](https://schema.org/FAQPage): authoritative vocabulary definitions.
-- [Next.js Metadata API](https://nextjs.org/docs/app/building-your-application/optimizing/metadata): `generateMetadata` for injecting JSON-LD at build time (for Next.js sites).
+- [llms-txt-action](https://github.com/demodrive-ai/llms-txt-action) (GitHub Action): generates `llms.txt` and `llms-full.txt` from a built docs site, which shortens the path from proof of concept to a scheduled production job.
+- [schema-dts](https://npm.io/package/schema-dts) (TypeScript, Apache 2.0): typed Schema.org definitions for generating valid JSON-LD at build time without hand-assembling raw objects.
+- [Schema.org HowTo](https://schema.org/HowTo) and [FAQPage](https://schema.org/FAQPage): authoritative vocabulary definitions for the structured data layer.
+- [Next.js Metadata API](https://nextjs.org/docs/app/building-your-application/optimizing/metadata): `generateMetadata` for injecting JSON-LD at build time on Next.js sites.
+- [Google Rich Results Test](https://search.google.com/test/rich-results) (web tool): validates the generated JSON-LD before rollout so the build step does not emit markup that looks correct but fails eligibility checks.
 
 #### Related ideas
 
